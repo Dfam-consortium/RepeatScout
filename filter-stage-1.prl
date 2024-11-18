@@ -1,0 +1,203 @@
+#!/usr/bin/env perl
+#
+# A first-stage fasta filter for RepeatScout libraries: removes anything under 50 
+# nt.  Removes anything that is over 50% low-complexity vis a vis TRF or dustmasker.
+#
+# Status is printed to STDERR, the resulting "good" repeats to STDOUT.
+#
+#
+# Created: 20050416
+# Author: Neil Jones
+#-----------------------------------------------------------------------------------
+
+use File::Temp;
+use File::Which qw(which where);
+
+if( grep /^--?h$/, @ARGV ) {
+	exec("perldoc $0");
+}
+
+#
+# Same parameters as Alkes' earlier version
+#
+my $DUST_THRESHOLD = .5;
+my $TRF_THRESHOLD  = .5;
+my $MIN_LENGTH     = 50;
+
+my $TRF_COMMAND          = $ENV{'TRF_COMMAND'}  || "trf";
+unless( -e $TRF_COMMAND || which($TRF_COMMAND) )
+{
+  die "ERROR: RepeatScout script filter-stage-1.prl cannot find 'trf' in the user's path!\n";
+}
+
+my $DUSTMASKER_COMMAND   = $ENV{'DUSTMASKER_COMMAND'} || "dustmasker";
+# deprecated ... this is only maintained for backwards compatibility
+my $NSEG_COMMAND         = $ENV{'NSEG_COMMAND'} || 'nseg';
+
+unless ( -e $DUSTMASKER_COMMAND || which($DUSTMASKER_COMMAND) || -e $NSEG_COMMAND || which($NSEG_COMMAND) )
+{
+  die "ERROR: RepeatScout script filter-stage-1.prl cannot find either 'nseg' or 'dustmasker' programs in the user's path!\n";
+}
+
+my $useNseg = 0;
+$useNseg = 1 if ( ! ( -e $DUSTMASKER_COMMAND || which($DUSTMASKER_COMMAND) ) );
+
+my ($head, $body);
+my $repeat_num  = 1;
+my $num_deleted = 0;
+my $num_skipped = 0;
+my $line        = 0;
+my $prefix      = "";
+while(<>) {
+	++$line;
+	chomp;
+	next if /^#/;  # Allow embedded comments.
+
+	if( /^>/ || eof() ) {
+                $body .= $_ if eof();
+		my $xx = $_;
+		my $trf;
+		my $lowcomplex;
+		if( length($body) > $MIN_LENGTH) {
+			my $tmp = new File::Temp( DIR => '.');
+			print $tmp "$head (RR=$repeat_num)\n";
+			print $tmp "$body\n";
+			$trf  = trf($tmp, $body);
+                        if ( $useNseg ) {
+                          $prefix = "NSEG";
+                          $lowcomplex = nseg($tmp, $body); 
+                        }else {
+                          $prefix = "DUST";
+			  $lowcomplex = dust($tmp, $body);
+                        }
+			$tmp->close();
+			$tmp = undef;  # Remove any reference counts so it's deleted.
+
+			if( $lowcomplex <= $DUST_THRESHOLD && $trf <= $TRF_THRESHOLD ) 
+			{
+				printf("$head (RR=$repeat_num.  TRF=%.3f $prefix=%.3f)\n", $trf, $lowcomplex);
+				for(my $ii = 0; $ii < length($body); $ii += 80) {
+					print substr($body, $ii, 80), "\n";
+				}
+			}
+
+			else {
+				print STDERR "deleting $head: $trf / $lowcomplex\n";
+				++$num_deleted;
+			}
+
+			++$repeat_num;
+		}
+
+		else {
+			++$num_skipped;
+		}
+		$head = $xx;
+		$body = '';
+	}
+
+	else {
+		die("Improperly formatted file: offensive line #$line was\n$_\n") if /[^ATGC]/;
+		
+		$body .= $_;
+	}
+}
+print STDERR "$num_deleted deleted.  $repeat_num saved. $num_skipped skipped for length.\n";
+
+sub trf {
+	my ($file, $text) = @_;
+	local *TRF;
+	my $trf = $TRF_COMMAND;
+
+	system("$trf $file 2 7 7 80 10 50 500 -f -d -m > /dev/null");
+	open(TRF, "<$file.2.7.7.80.10.50.500.mask") or die($!);
+	my $len = 0;
+
+	while(<TRF>) {
+		chomp;
+		next if /^>/;
+		s/n//g;
+		s/N//g;
+		$len += 1*length($_);
+	}
+	close(TRF);
+
+	# TRF produces many output files.
+	unlink "$file.2.7.7.80.10.50.500.mask";
+	unlink "$file.2.7.7.80.10.50.500.dat";
+	unlink "$file.2.7.7.80.10.50.500.1.txt.html";
+	unlink "$file.2.7.7.80.10.50.500.1.html";
+
+	return (length($text)-$len) / length($text);
+}
+
+sub dust {
+	my ($file, $text) = @_;
+	local *DUST;
+	my $dust = $DUSTMASKER_COMMAND;
+
+	open(DUST, "$dust -in $file -outfmt fasta |");
+	my $len = 0;
+
+	while(<DUST>) {
+		chomp;
+		next if /^>/;
+		s/[actgnN]//g;
+		$len += 1*length($_);
+	}
+	close(DUST);
+
+	return (length($text)-$len) / length($text);
+}
+
+sub nseg {
+	my ($file, $text) = @_;
+	local *NSEG;
+	my $nseg = $NSEG_COMMAND;
+	open(NSEG, "$nseg $file -x -c 100 |");
+	my $len = 0;
+	while(<NSEG>) {
+		chomp;
+		next if /^>/;
+
+		s/n//g;
+		s/N//g;
+		
+		$len += 1*length($_);
+	}
+	close(NSEG);
+	return (length($text)-$len) / length($text);
+}
+
+__END__
+
+=head1 NAME  
+
+filter-stage-1.prl -- a first stage post-processing tool for RepeatScout output.
+
+=head1 SYNOPSIS
+
+cat repeats.fa | filter-stage-1.prl > repeats-filtered.prl
+
+=head1 OPTIONS
+
+none other than "-h" (the output of which you're reading), 
+but you will either want trf and dustmasker in your PATH, or you will want
+to set the environment variables TRF_COMMAND and DUSTMASKER_COMMAND to provide
+the executable.
+
+=head1 DESCRIPTION
+
+This tool takes a repeat library, which is a Fasta-formatted sequence file, and
+filters out any sequence that is deemed to be more than 50% low-complexity by either
+TRF or dustmasker or both.  Note that one algorithm needs to make the determination; we don't
+check the total number of unique bases masked out by TRF and dustmasker individually.
+
+=head1  ENVIRONMENT VARIABLES
+
+In order for this program to find TRF and dustmasker, you need to either place said programs
+in your PATH, or you need to add the environment variables TRF_COMMAND and DUSTMASKER_COMMAND.
+The value of those variables should be the path at which the respective program can be
+found.
+
+=cut
