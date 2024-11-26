@@ -11,7 +11,7 @@
 ####################################################################
 
 # Set the version here
-VERSION = 1.0.6
+VERSION = 1.0.7
 
 # Installation Directory
 INSTDIR = /usr/local/RepeatScout-$(VERSION)

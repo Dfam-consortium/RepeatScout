@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <time.h>
 #include <math.h>
 
@@ -16,11 +17,12 @@ int MAXLENGTH;   /* Length of sequence.  It's a misnomer, primarily for backward
 int l;           /* Length of l-mers to look at. Odd or even is OK */
 #define smalll 6
 #define SEEDMISMATCHES 0 /* allow this many mismatches from seed */
-#define HASH_SIZE 16000057 /* prime */
+#define HASH_SIZE 16000057  /* prime */
 #define SMALLHASH_SIZE 5003 /* prime */
 char* SEQUENCE_FILE;      /* Where to get sequence data from. */
 char* OUTPUT_FILE;        /* Where to put output. */
 char* LMER_TABLE_FILE;    /* Where the lmer table is stored. */
+char* RANGES_FILE = NULL; /* Where to put the extended sequence ranges. */
 int   MINTHRESH;      /* at end, remove l-mers with freq < MINTHRESH */
 int   TANDEMDIST; /* l-mers must be this far apart to avoid tandem repeats */
 int   VERBOSE;    /* How chatty?  Real chatty?  Really really chatty?  Super extra really chatty? */
@@ -43,7 +45,7 @@ int GOODLENGTH; /* minimum length of a good subfamily (50) */
 int default_l(int);
 
 /*
- * -------- Internal global variables -------- 
+ * -------- Internal global variables --------
  */
 int length; /* length of genome sequence */
 char *sequence;  /* [2*MAXLENGTH+3*PADLENGTH]; */
@@ -52,7 +54,7 @@ char *removed;   /* [2*MAXLENGTH+3*PADLENGTH]; */
 char *master;
 char **masters; /* MAXR * (2*L+l) but allocate dynamically */
 int *masters_allocated;
-int *masterstart; 
+int *masterstart;
 int *masterend;
 int *pos;
 char *rev;  // RMH: Flag indicating if N is a forward/reverse strand lmer
@@ -66,6 +68,16 @@ int totalbestscore;       /* alignment score for this y or w */
 int besttotalbestscore;   /* best alignment score for any y or w seen so far */
 int *bestbestscore;  /* best alignment score for this n for any y or w seen so far */
 int *savebestscore;
+
+// RMH: Added to keep track of the best left and right offsets
+int *best_left_offset;
+int *save_left_offset;
+int *best_right_offset;
+int *save_right_offset;
+
+// RMH: Added to support sequence identifiers
+char **sequence_ids = NULL;
+
 int besty, bestw, nrepeatocc, nactiverepeatocc, bestnrepeatocc, bestnactiverepeatocc, R;
 int bestrepeaty, bestsequencey, bestrepeatw, bestsequencew, repeat2sequence;
 int maxrepeaty, minrepeatw;
@@ -80,10 +92,16 @@ int *boundaries; // RMH: Fasta sequence boundaries.  This contains
 
 #define IUPAC(c) c == 'R' || c=='r' || c=='Y' || c=='y' || c=='M' || c=='m' || c=='K' || c=='k' || c=='W' || c=='w' || c=='S' || c=='s' || c=='B' || c=='b' || c=='D' || c=='d' || c=='H' || c=='h' || c=='V' || c=='v'
 
-void usage() 
+void usage()
 {
 	fprintf(stderr, "RepeatScout Version %s\n\nUsage: \n"
-           "RepeatScout -sequence <seq> -output <out> -freq <freq> -l <l> [opts]\n"
+           "RepeatScout [opts][-ranges <file>] -sequence <file> -output <file> -freq <file> -l #\n"
+           "     -sequence <file>  # file containing sequence data (FASTA format)\n"
+           "     -output <file>    # file to write identified consensi to (FASTA format)\n"
+           "     -freq <file>      # file containing l-mer frequency table\n"
+           "     -l #              # length of l-mers to use (must be same as frequency file)\n"
+           "     -ranges <file>    # file to save the extended sequence ranges (optional)\n"
+           "\n"
            "     -L # size of region to extend left or right (10000) \n"
            "     -match # reward for a match (+1)  \n"
            "     -mismatch # penalty for a mismatch (-1) \n"
@@ -114,12 +132,13 @@ int main(int argc, char* argv[])
   struct llist **headptr;
   struct llist *besttmp;
   FILE *fp;
+  FILE *ranges_fp = NULL;
 
   start = time(0);
   if( 0 == 1 *
        co_get_string(argc, argv, "-sequence", &SEQUENCE_FILE) *
        co_get_string(argc, argv, "-output", &OUTPUT_FILE) *
-       co_get_string(argc, argv, "-freq", &LMER_TABLE_FILE) 
+       co_get_string(argc, argv, "-freq", &LMER_TABLE_FILE)
   ) {
     usage();
     exit(1);
@@ -134,7 +153,9 @@ int main(int argc, char* argv[])
   MAXLENGTH = ftell(fp);
   fclose(fp);
 
-  co_get_int(argc, argv, "-l", &l) || (l = default_l(MAXLENGTH));
+  (void)(co_get_int(argc, argv, "-l", &l) || (l = default_l(MAXLENGTH)));
+
+  co_get_string(argc, argv, "-ranges", &RANGES_FILE);
 
   sequence = (char *) malloc( (2 * MAXLENGTH + 3 * PADLENGTH) * sizeof(char) );
   if( NULL == sequence ) {
@@ -158,7 +179,7 @@ int main(int argc, char* argv[])
   co_get_int(argc, argv, "-cappenalty", &CAPPENALTY)         || (CAPPENALTY=-20);
   co_get_int(argc, argv, "-minimprovement", &MINIMPROVEMENT) || (MINIMPROVEMENT=3);
   co_get_int(argc, argv, "-stopafter", &WHEN_TO_STOP)        || (WHEN_TO_STOP=100);
-  co_get_float(argc, argv, "-maxentropy", &MAXENTROPY)       || (MAXENTROPY=-0.7);
+  (void)(co_get_float(argc, argv, "-maxentropy", &MAXENTROPY)|| (MAXENTROPY=-0.7));
   co_get_int(argc, argv, "-goodlength", &GOODLENGTH)         || (GOODLENGTH=50);
   co_get_int(argc, argv, "-tandemdist", &TANDEMDIST)         || (TANDEMDIST=500);
   co_get_int(argc, argv, "-minthresh", &MINTHRESH)           || (MINTHRESH=3);
@@ -171,7 +192,7 @@ int main(int argc, char* argv[])
 
 
   master = (char *)malloc( (2*L+l+1) * sizeof(char));
-  master[2*L+l] = (char)NULL;
+  master[2*L+l] = '\0';
   if( NULL == master ) {
     fprintf(stderr, "Could not allocate space for master array\n");
     exit(1);
@@ -222,12 +243,30 @@ int main(int argc, char* argv[])
     exit(1);
   }
 
+  // RMH: Added to keep track of the best left and right offsets
+  best_left_offset = (int *)malloc( MAXN * sizeof(int) );
+  save_left_offset = (int *)malloc( MAXN * sizeof(int) );
+  best_right_offset = (int *)malloc( MAXN * sizeof(int) );
+  save_right_offset = (int *)malloc( MAXN * sizeof(int) );
+  if ( NULL == best_left_offset || NULL == save_left_offset ||
+       NULL == best_right_offset || NULL == save_right_offset ) {
+    fprintf(stderr, "Could not allocated space for the best offset arrays\n");
+    exit(1);
+  }
+  for(int n=0; n<MAXN; n++)
+  {
+    best_left_offset[n] = -1;
+    save_left_offset[n] = -1;
+    best_right_offset[n] = -1;
+    save_right_offset[n] = -1;
+  }
+
   /* print parameters */
   if(VERBOSE) print_parameters();
 
   /* build sequence */
   length = build_sequence(sequence,SEQUENCE_FILE);
-  // RMH: This is no longer needed.  We use one copy of 
+  // RMH: This is no longer needed.  We use one copy of
   //      the sequence now.  Saves space and makes further
   //      modifications easier.
   //add_rc(sequence); if(VERBOSE) fprintf(stderr,"Done building sequence\n");
@@ -240,7 +279,7 @@ int main(int argc, char* argv[])
   if((headptr = (struct llist **) malloc(HASH_SIZE*sizeof(*headptr))) == NULL)
   {
     fprintf(stderr,"Out of memory\n");  exit(1);
-  } 
+  }
   if(VERBOSE) fprintf(stderr,"Done allocating headptr\n");
   build_headptr(headptr);
   if(VERBOSE) fprintf(stderr,"Done building headptr\n");
@@ -250,14 +289,23 @@ int main(int argc, char* argv[])
     fprintf(stderr,"Could not open input file %s\n", OUTPUT_FILE);  exit(1);
   }
 
+  if ( RANGES_FILE != NULL )
+  {
+    if( (ranges_fp = fopen(RANGES_FILE, "w")) == NULL)
+    {
+      fprintf(stderr,"Could not open input file %s\n", RANGES_FILE);  exit(1);
+    }
+  }
+
   R = 0;
   prevbestfreq = 1000000000;
   prevbesthash = 0;
   while(1)
   {
     besttmp = find_besttmp(headptr);
+
     if((besttmp == NULL) || (besttmp->freq < MINTHRESH)) /* 2nd cond added 6/9/04 */
-    { 
+    {
       if(VERBOSE) printf("Stopped at R=%d since no more frequent l-mers\n",R);
       if(VERBOSE) fprintf(stderr,"Stopped at R=%d since no more frequent l-mers\n",R);
       break;
@@ -270,13 +318,24 @@ int main(int argc, char* argv[])
     if ( N < MINTHRESH )
     {
       printf("Warning: N ( %d ) is less than MINTHRESH ( %d ) yet "
-             "besttmp->freq = %d....hmmm\nlmer = ", 
+             "besttmp->freq = %d....hmmm\nlmer = ",
              N, MINTHRESH, besttmp->freq );
-      for(x=0; x<l; x++) 
+      for(x=0; x<l; x++)
          printf("%c", num_to_char( sequence[(besttmp->lastocc)+x] ) );
       printf("\nh = %d\n", prevbesthash );
       besttmp->freq = N;
       continue;
+    }
+
+    // RMH: New in 1.0.7 these arrays keep track of the absolute high scoring
+    //      left and right extension offsets (best_left/best_right) and the
+    //      highest seen at the time the MSA was scoring highest (save_left/save_right).
+    for(int n=0; n<N; n++)
+    {
+      best_left_offset[n] = -1;
+      save_left_offset[n] = -1;
+      best_right_offset[n] = -1;
+      save_right_offset[n] = -1;
     }
 
     if(masters_allocated[R] == 0)
@@ -286,11 +345,69 @@ int main(int argc, char* argv[])
       masters_allocated[R] = 1;
     }
 
+    // Do the extensions
     extend_right();
     extend_left();
+
+    // RMH: New in 1.0.7, print the extended ranges to the ranges file (if specified)
+    if ( ranges_fp != NULL )
+    {
+      for(int n=0; n<N; n++) {
+        x = 0;
+        while ( boundaries[x] != 0 )
+        {
+          if ( boundaries[x] + PADLENGTH > pos[n] )
+            break;
+          x++;
+        }
+        int seq_idx = x;
+        int seq_lower_bound = PADLENGTH;
+        if ( seq_idx > 0 )
+          seq_lower_bound = boundaries[seq_idx-1]+PADLENGTH;
+
+        int left_ext = 0;
+        int right_ext = 0;
+        if ( save_left_offset[n] >= 0 )
+          left_ext = L-save_left_offset[n] - 1;
+        if ( save_right_offset[n] >= 0 )
+          right_ext = save_right_offset[n]-l-L;
+
+        int int_start = 0;
+        int int_end = 0;
+        if ( rev[n] ) {
+          int_start = pos[n]-right_ext;
+          int_end = pos[n]+l+left_ext;
+        }else {
+          int_start = pos[n]-left_ext;
+          int_end = pos[n]+l+right_ext;
+        }
+
+        int seq_start = int_start - seq_lower_bound;
+        int seq_end = int_end - seq_lower_bound;
+
+        // As with the normal output routines only save families that
+        // meet the GOODLENGTH criteria, and in this case only save
+        // examplars that also meet the GOODLENGTH criteria.
+        if (masterend[R]-masterstart[R]+1 >= GOODLENGTH &&
+            int_end-int_start+1 >= GOODLENGTH) {
+          if ( rev[n] ) {
+            fprintf(ranges_fp,"%s\t%d\t%d\tR=%d\t-\t%d\t%d\t%d\n",
+                  sequence_ids[seq_idx],seq_start,seq_end+1,R,pos[n]-seq_lower_bound,left_ext,right_ext);
+          }else {
+            fprintf(ranges_fp,"%s\t%d\t%d\tR=%d\t+\t%d\t%d\t%d\n",
+                  sequence_ids[seq_idx],seq_start,seq_end+1,R,pos[n]-seq_lower_bound,left_ext,right_ext);
+          }
+        }
+        // RMH: In the future we may want to save the actual sequences to a FASTA file.  For now
+        //      I am leaving this in here for debugging purposes.
+        //for(x=0; x<(int_end-int_start+1); x++) fprintf(ranges_fp,"%c",num_to_char(sequence[int_start+x]));
+        //fprintf(ranges_fp,"\n");
+      }
+    }
+
     if(masterend[R]-masterstart[R]+1 >= GOODLENGTH)
     {
-      if(VERBOSE) 
+      if(VERBOSE)
       {
         printf("R=%d: Master lmer hit is ",R);
         for(x=0; x<l; x++) printf("%c",num_to_char(master[L+x]));
@@ -311,25 +428,25 @@ int main(int argc, char* argv[])
         if((x-masterstart[R])%80 == 79) fprintf(fp,"\n");
       }
       if((x-masterstart[R])%80 > 0) fprintf(fp,"\n");
-      if(VERBOSE) 
+      if(VERBOSE)
       {
         printf("R=%d: N is %d\n",R,N);
         fprintf(stderr,"R=%d: N is %d\n",R,N);
-        printf("AFTER EXTENDING LEFT, FAMILY %d IS:\n",R);
+        printf("AFTER EXTENDING FAMILY %d IS:\n",R);
         printf("%d letters total:\n",masterend[R]-masterstart[R]+1);
-        for(x=masterstart[R]; x<=masterend[R]; x++) 
+        for(x=masterstart[R]; x<=masterend[R]; x++)
         {
           printf("%c",num_to_char(master[x]));
           if((x-masterstart[R])%80 == 79) printf("\n");
-	}
+ 	      }
         if((x-masterstart[R])%80 > 0) printf("\n");
-        fprintf(stderr,"AFTER EXTENDING LEFT, FAMILY %d IS:\n",R);
+        fprintf(stderr,"AFTER EXTENDING FAMILY %d IS:\n",R);
         fprintf(stderr,"%d letters total:\n",masterend[R]-masterstart[R]+1);
         for(x=masterstart[R]; x<=masterend[R]; x++) 
-	{
+	      {
           fprintf(stderr,"%c",num_to_char(master[x]));
           if((x-masterstart[R])%80 == 79) fprintf(stderr,"\n");
-	}
+      	}
         if((x-masterstart[R])%80 > 0) fprintf(stderr,"\n");
       }
 
@@ -370,7 +487,7 @@ int main(int argc, char* argv[])
 void build_headptr(struct llist **headptr)
 {
   FILE *fp;
-  char string[l];
+  char string[1000];
   int thisfreq, thisocc, x, h, n;
   struct llist *tmp;
 
@@ -383,16 +500,50 @@ void build_headptr(struct llist **headptr)
   for(h=0; h<HASH_SIZE; h++)
     headptr[h] = NULL;
 
+  int items_read = 0;
   n = 0;
   while(1)
   {
-    fscanf(fp,"%s",string);
-    fscanf(fp,"%d",&thisfreq);
-    fscanf(fp,"%d",&thisocc);
+    items_read = fscanf(fp, "%s", string);
+    if (items_read == EOF) {
+        if (feof(fp)) {
+            // Normal EOF reached; exit the loop gracefully
+            break;
+        } else {
+            // An error occurred while reading
+            fprintf(stderr, "Error reading kmer string from frequency file.\n");
+            exit(1);
+        }
+    } else if (items_read != 1) {
+        fprintf(stderr, "Error reading kmer string from frequency file.\n");
+        exit(1);
+    }
 
-    /* printf("Processing string %s thisfreq %d\n",string,thisfreq); */
+    // Read the frequency
+    items_read = fscanf(fp, "%d", &thisfreq);
+    if (items_read == EOF) {
+        fprintf(stderr, "Unexpected end of file when reading frequency.\n");
+        exit(1);
+    } else if (items_read != 1) {
+        fprintf(stderr, "Error reading frequency from frequency file.\n");
+        exit(1);
+    }
 
-    if(string[0] < 10) break; /* end of file */
+    // Read the occurrence
+    items_read = fscanf(fp, "%d", &thisocc);
+    if (items_read == EOF) {
+        fprintf(stderr, "Unexpected end of file when reading occurrence.\n");
+        exit(1);
+    } else if (items_read != 1) {
+        fprintf(stderr, "Error reading occurrence from frequency file.\n");
+        exit(1);
+    }
+
+    if ( strlen(string) != l ) {
+        fprintf(stderr, "Error: lmer length mismatch.  Expected %d, got %ld.\n", l, strlen(string));
+        exit(1);
+    }
+
     for(x=0; x<l; x++) string[x] = char_to_num(string[x]); /* must translate */
 
     h = hash_function(string);
@@ -401,7 +552,7 @@ void build_headptr(struct llist **headptr)
     while(tmp != NULL)
     {
       if(lmermatcheither(sequence+(tmp->lastocc),string) == 1) /* forward or rc match */
-      {      
+      {
         /* already in there.  Means we have reached end of file: all done */
         break;
       }
@@ -472,7 +623,7 @@ void build_all_pos(struct llist **headptr)
 
   for(x=l-1; x<length-l+1; x++)
   {
-    // RMH: Make sure we are not on a sequence boundary.  
+    // RMH: Make sure we are not on a sequence boundary.
     //      NOTE: I have decided to adjust the frequency
     //            also at this stage.  This should take care
     //            of build_lmer_table including elements
@@ -484,7 +635,7 @@ void build_all_pos(struct llist **headptr)
     {
       if ( x == boundaries[currBoundary] + PADLENGTH )
       {
-        currBoundary++; 
+        currBoundary++;
       }
       if ( x+l > boundaries[currBoundary] + PADLENGTH )
       {
@@ -606,7 +757,7 @@ struct llist *find_besttmp(struct llist **headptr)
     tmp = headptr[h];
     while(tmp != NULL)
     {
-      if(tmp->freq == prevbestfreq)  
+      if(tmp->freq == prevbestfreq)
       {
         prevbesthash = h;
         return tmp;
@@ -716,6 +867,8 @@ int build_sequence(char *sequence, char *filename)
   char c;
   FILE *fp;
   int boundariesSize = 100;
+  int id_count = 0;
+  char id_buffer[1024];
 
   // RMH: Initialize the boundaries array
   boundaries = (int *)malloc( boundariesSize * sizeof(int) );
@@ -723,7 +876,7 @@ int build_sequence(char *sequence, char *filename)
     fprintf(stderr, "Could not allocated space for the boundaries array\n");
     exit(1);
   }
-  
+
   if( (fp = fopen(filename, "r")) == NULL)
   {
     fprintf(stderr,"Could not open input file %s\n", filename);  exit(1);
@@ -738,8 +891,37 @@ int build_sequence(char *sequence, char *filename)
     if(c == '\n') continue;
     if(c == '>')
     {
-      for(j=0; (getc(fp) != '\n') && !feof(fp); j++)
-        ;
+      // RMH: New in 1.0.7 - read in and save the sequence identifiers for use in the ranges output
+      j = 0;
+      while ((c = getc(fp)) != '\n' && c != EOF) {
+        if ( c == ' ' || c == '\t' ) {
+          while ((c = getc(fp)) != '\n' && c != EOF) {
+             ;
+          }
+          break;
+        }
+        if (j < sizeof(id_buffer) - 1) {
+          id_buffer[j++] = c;
+        }
+      }
+      id_buffer[j] = '\0';
+
+      id_count++;
+
+      char **temp = realloc(sequence_ids, (id_count + 1) * sizeof(char *));
+      if (temp == NULL) {
+        fprintf(stderr, "Could not allocate more space for the sequence_ids array\n");
+        exit(1);
+      }
+      sequence_ids = temp;
+      sequence_ids[id_count] = NULL;
+      sequence_ids[id_count-1] = malloc(strlen(id_buffer) + 1);
+      if ( ! sequence_ids[id_count-1] ) {
+        fprintf(stderr, "Could not allocate more space for the ids array\n");
+        exit(1);
+      }
+      strcpy(sequence_ids[id_count-1], id_buffer);
+
       // RMH: Store boundary info
       if ( seq > 0 )
       {
@@ -753,7 +935,7 @@ int build_sequence(char *sequence, char *filename)
             exit(1);
           }
         }
-        //printf("Adding sequence boundary[%d] = %d, %d\n", 
+        //printf("Adding sequence boundary[%d] = %d, %d\n",
         //                      ( seq-1 ), i, i+PADLENGTH );
         boundaries[seq-1] = i;
       }
@@ -761,14 +943,14 @@ int build_sequence(char *sequence, char *filename)
     }
     else
     {
-      if(c > 64) 
+      if(c > 64)
       {
         sequence[i+PADLENGTH] = char_to_num(c);
         i++;
       }
       for(j=0; ((c = getc(fp)) != '\n') && !feof(fp) && (i<MAXLENGTH); j++)
       {
-        if(c > 64) 
+        if(c > 64)
         {
           sequence[i+PADLENGTH] = char_to_num(c);
           i++;
@@ -897,8 +1079,9 @@ void extend_right()
         for(offset=-MAXOFFSET; offset<=MAXOFFSET; offset++)
         {
           tempscore = compute_score_right(y,n,offset,a);
-          if(tempscore > bestscore)
+          if(tempscore > bestscore) {
             bestscore = tempscore;
+          }
         }
         newtotalbestscore_a += bestscore;
       }
@@ -1023,7 +1206,8 @@ void extend_left()
 
 void mask_headptr(struct llist **headptr) /* removed[x]=1 means l-mer x was removed */
 {
-  int x, y, smallh, h, h2, flip;
+  int x, y, smallh, h, h2;
+  //int flip;
   int startmask, endmask;
   struct repeatllist **repeatheadptr;
   struct repeatllist *repeattmp, *nextrepeattmp;
@@ -1079,12 +1263,12 @@ void mask_headptr(struct llist **headptr) /* removed[x]=1 means l-mer x was remo
         // RMH: TODO: Possibly no longer needed
         if(lmermatch(sequence+(tmp->lastocc),repeattmp->value))
 	{
-          flip = 0;
+          //flip = 0;
           break;
         }
         else if(lmermatchrc(sequence+(tmp->lastocc),repeattmp->value))
 	{
-          flip = 1;
+          //flip = 1;
           break;
 	}
         tmp = tmp->next;
@@ -1546,16 +1730,26 @@ void compute_totalbestscore_right(int y)
   {
     bestscore = bestbestscore[n] + CAPPENALTY;
     if(bestscore < 0) bestscore = 0;
+    int bestscore_offset =-100000;
     for(offset=-MAXOFFSET; offset<=MAXOFFSET; offset++)
     {
-      if(score[y%2][n][offset+MAXOFFSET] > bestscore)
+      if(score[y%2][n][offset+MAXOFFSET] > bestscore) {
         bestscore = score[y%2][n][offset+MAXOFFSET];
+        bestscore_offset = offset;
+      }
     }
     if(bestscore > 0) nrepeatocc++;
     if(bestscore > bestbestscore[n] + CAPPENALTY) nactiverepeatocc++;
-    if(bestscore > bestbestscore[n]) bestbestscore[n] = bestscore;
+    if(bestscore > bestbestscore[n]) {
+      // RMH: Save the *overall* best offset+y seen for seed n
+      if ( bestscore_offset >= -MAXOFFSET ) {
+        best_right_offset[n] = bestscore_offset + y;
+      }
+      bestbestscore[n] = bestscore;
+    }
+
     totalbestscore += bestscore;
-  }
+  } // over all seeds
 
   if((totalbestscore >= besttotalbestscore + (y-besty)*MINIMPROVEMENT)
      && (totalbestscore > besttotalbestscore)) /* to deal with MINIMPROVEMENT=0 */
@@ -1564,8 +1758,14 @@ void compute_totalbestscore_right(int y)
     besttotalbestscore = totalbestscore;
     bestnrepeatocc = nrepeatocc;
     bestnactiverepeatocc = nactiverepeatocc;
-    for(n=0; n<N; n++) 
+    for(n=0; n<N; n++)
     {
+      // RMH: Now that we see that the overall MSA is better (over all n),
+      //      save the best offset+y for each seed n.  It may be the case that
+      //      a single seed may continue to improve but since we have not decided
+      //      to save the consensus over these positions (MINIMPROVEMENT), these
+      //      improvements (best_right_offset) are not saved.
+      save_right_offset[n] = best_right_offset[n];
       savebestscore[n] = bestbestscore[n];
       for(offset=-MAXOFFSET; offset<=MAXOFFSET; offset++)
         score_of_besty[n][offset+MAXOFFSET] = score[y%2][n][offset+MAXOFFSET];
@@ -1601,16 +1801,25 @@ void compute_totalbestscore_left(int w)
   totalbestscore = 0;
   for(n=0; n<N; n++)
   {
+    int bestscore_offset = -100000;
     bestscore = bestbestscore[n] + CAPPENALTY;
     if(bestscore < 0) bestscore = 0;
     for(offset=-MAXOFFSET; offset<=MAXOFFSET; offset++)
     {
-      if(score[w%2][n][offset+MAXOFFSET] > bestscore)
+      if(score[w%2][n][offset+MAXOFFSET] > bestscore) {
         bestscore = score[w%2][n][offset+MAXOFFSET];
+        // RMH: See compute_totalbestscore_right for details
+        bestscore_offset = offset;
+      }
     }
     if(bestscore > 0) nrepeatocc++;
     if(bestscore > bestbestscore[n] + CAPPENALTY) nactiverepeatocc++;
-    if(bestscore > bestbestscore[n]) bestbestscore[n] = bestscore;
+    if(bestscore > bestbestscore[n]) {
+      if ( bestscore_offset >= -MAXOFFSET ) {
+        best_left_offset[n] = bestscore_offset + w;
+      }
+      bestbestscore[n] = bestscore;
+    }
     totalbestscore += bestscore;
   }
 
@@ -1621,6 +1830,11 @@ void compute_totalbestscore_left(int w)
     besttotalbestscore = totalbestscore;
     bestnrepeatocc = nrepeatocc;
     bestnactiverepeatocc = nactiverepeatocc;
+    // RMH: See compute_totalbestscore_right for details
+    for(n=0; n<N; n++)
+    {
+      save_left_offset[n] = best_left_offset[n];
+    }
   }
 
   return;
@@ -1632,7 +1846,7 @@ void print_totalbestscore_left(int w)
   char num_to_char(char z);
 
   printf("%d letters total:\n",besty-w+1);
-  for(x=w; x<=besty; x++) 
+  for(x=w; x<=besty; x++)
   {
     printf("%c",num_to_char(master[x]));
     if((x-w)%80 == 79) printf("\n");
@@ -1649,7 +1863,7 @@ void fprint_totalbestscore_left(int w)
   char num_to_char(char z);
 
   fprintf(stderr,"%d letters total:\n",besty-w+1);
-  for(x=w; x<=besty; x++) 
+  for(x=w; x<=besty; x++)
   {
     fprintf(stderr,"%c",num_to_char(master[x]));
     if((x-w)%80 == 79) fprintf(stderr,"\n");
@@ -1665,7 +1879,7 @@ int compute_score_right(int y, int n, int offset, char a)
   int oldoffset, tempscore, ans, ismatch, x;
   int bStart, bEnd;
 
-  //RMH: Sequence boundaries check.  
+  //RMH: Sequence boundaries check.
   //      bStart                  bEnd
   //    inclusive---------------exclusive
   bStart = PADLENGTH;
@@ -1692,8 +1906,8 @@ int compute_score_right(int y, int n, int offset, char a)
     }
   }
 
-  ans = -1000000000; 
-  /* first, try oldoffset = offset+1.  
+  ans = -1000000000;
+  /* first, try oldoffset = offset+1.
      This means master[y]=a aligns to - */
   if(offset < MAXOFFSET)
   {
@@ -1702,7 +1916,7 @@ int compute_score_right(int y, int n, int offset, char a)
     if(tempscore > ans) ans = tempscore;
   }
 
-  /* next, try oldoffset = offset.  
+  /* next, try oldoffset = offset.
      This means master[y]=a aligns to sequence[pos[n]+offset+y-L] */
   oldoffset = offset;
   tempscore = score[(y-1)%2][n][oldoffset+MAXOFFSET];

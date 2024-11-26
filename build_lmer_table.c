@@ -32,7 +32,7 @@ int STOP  = -1;
 
 char *sequence;
 
-void usage() 
+void usage()
 {
 	fprintf(stderr, "build_lmer_table Version %s\n\n"\
 		"Usage:\n"\
@@ -48,13 +48,13 @@ void usage()
 
 int main(int argc, char* argv[])
 {
-  time_t start;
+  //time_t start;
   struct llist **headptr;
   int *sortedocc, *sortedfreq, ngoodlmers;
   long *sortedindex;
   FILE* fp;
 
-  start = time(0);
+  //start = time(0);
 
   /* Gather command-line options... */
   if( 0 == 1*
@@ -82,7 +82,7 @@ int main(int argc, char* argv[])
   MAXLENGTH = ftell(fp);  /* This is an approximation, but an overestimate, so we're ok! */
   fclose(fp);
 
-  co_get_int(argc, argv, "-l", &l) || (l = default_l(MAXLENGTH));
+  (void)(co_get_int(argc, argv, "-l", &l) || (l = default_l(MAXLENGTH)));
 
   sequence = (char *)malloc( (MAXLENGTH + PADLENGTH) * sizeof(char) );
   if( NULL == sequence ) {
@@ -97,7 +97,7 @@ int main(int argc, char* argv[])
   if((headptr = (struct llist **) malloc(HASH_SIZE*sizeof(*headptr))) == NULL)
   {
     fprintf(stderr,"Out of memory\n");  exit(1);
-  } 
+  }
   if(VERBOSE) fprintf(stderr,"  Done allocating headptr\n");
   build_headptr(headptr); if(VERBOSE) fprintf(stderr,"  Done building headptr\n");
 
@@ -107,15 +107,15 @@ int main(int argc, char* argv[])
   if((sortedfreq = (int *) malloc(ngoodlmers*sizeof(*sortedfreq))) == NULL)
   {
     fprintf(stderr,"Out of memory\n");  exit(1);
-  } 
+  }
   if((sortedocc = (int *) malloc(ngoodlmers*sizeof(*sortedocc))) == NULL)
   {
     fprintf(stderr,"Out of memory\n");  exit(1);
-  } 
+  }
   if((sortedindex = (long *) malloc(ngoodlmers*sizeof(*sortedindex))) == NULL)
   {
     fprintf(stderr,"Out of memory\n");  exit(1);
-  } 
+  }
   sort_headptr(headptr, sortedfreq, sortedocc, sortedindex, ngoodlmers);
   if(VERBOSE) fprintf(stderr,"  Done sorting headptr\n");
   if(ngoodlmers == 0) { fprintf(stderr,"OOPS no good lmers\n"); exit(1); }

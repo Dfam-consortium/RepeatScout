@@ -116,6 +116,10 @@ Contributors to the Dfam consortium maintained version of RepeatScout include:
 
 ## Version History
 
+* 1.0.7
+    * Added capability of recording the extended sequence coordinates for
+      each seed.  This information is optionally stored in a TSV file for
+      use in downstream analysis.
 * 1.0.6  
     * Switched filter-stage-1.prl from deprecated NSEG to the
         DUSTMASKER tool.
