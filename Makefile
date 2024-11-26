@@ -42,7 +42,7 @@ clean:
 install: all
 	@mkdir $(INSTDIR)
 	cp RepeatScout $(INSTDIR)
-	cp README $(INSTDIR)
+	cp README.md $(INSTDIR)
 	cp build_lmer_table $(INSTDIR)
 	cp filter-stage-1.prl $(INSTDIR)
 	cp filter-stage-2.prl $(INSTDIR)
